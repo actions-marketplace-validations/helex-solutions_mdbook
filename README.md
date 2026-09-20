@@ -111,7 +111,7 @@ in [Authentication](#authentication).
        steps:
          - uses: actions/checkout@v7
          - id: mdbook
-           uses: helex-solutions/mdbook@v1.8.1   # pin to a release tag (see Versioning)
+           uses: helex-solutions/mdbook@v1.8.3   # pin to a release tag (see Versioning)
            with: { project: . }
          - uses: actions/configure-pages@v6
          - uses: actions/upload-pages-artifact@v5
@@ -137,7 +137,7 @@ in [Authentication](#authentication).
 
 ### Versioning
 
-Pin the action to a **release tag** (e.g. `helex-solutions/mdbook@v1.8.1`) so your site builds are
+Pin the action to a **release tag** (e.g. `helex-solutions/mdbook@v1.8.3`) so your site builds are
 deterministic — `main` can move without silently redeploying your site. See the
 [releases](https://github.com/helex-solutions/mdbook/releases). Use `@main` only if you want the
 latest, unreleased changes.
@@ -147,7 +147,7 @@ on someone else's schedule, which is the thing pinning exists to prevent. Every 
 exact version, so `@v1` resolves to nothing — upgrade by changing the pin.
 
 **Upgrading from `v1.7.0`.** Two things change for wiki-export sites, both one line each. From
-`v1.8.0` there is nothing to do — `v1.8.1` is a patch.
+`v1.8.0` there is nothing to do — `v1.8.1`, `v1.8.2` and `v1.8.3` are patches.
 
 `comments.mapping` must read `owliki` if it carried the retired name. Both spellings resolved to
 the same discussion term — the page code — so changing the word keeps every existing thread; a
@@ -167,10 +167,10 @@ nothing at all.
 **To publish a new mdbook version:**
 
 ```bash
-git tag -a v1.8.2 -m "…" && git push origin v1.8.2   # patch; v1.9.0 for features
+git tag -a v1.8.4 -m "…" && git push origin v1.8.4   # patch; v1.9.0 for features
 ```
 
-Then bump `@v1.8.1` → `@v1.8.2` in each consumer's `.github/workflows/mdbook.yml` and push —
+Then bump `@v1.8.3` → `@v1.8.4` in each consumer's `.github/workflows/mdbook.yml` and push —
 a deliberate step, so upgrades are reviewed rather than automatic.
 
 ## Local preview
@@ -304,11 +304,22 @@ build:
 > still carrying it fails the build, naming the value to replace it with. Change
 > `source.format` to `owliki`; nothing else in the config changes.
 
+**`SUMMARY.md` dialects.** Both GitBook's and mdBook's `SUMMARY.md` are understood. The
+first `#` heading is the book title and is not shown. After it, a GitBook `## Group` heading and
+an mdBook `# Part` title each open a sidebar group, and bulleted entries nest by indent. mdBook's
+unbulleted prefix and suffix chapters — `[Introduction](README.md)` alone on a line — sit at the
+top level, outside any group. The one ambiguity is settled that way round: a file with no title
+line loses its first part heading, which is read as the title.
+
 **Plain doc trees (no `SUMMARY.md`).** With the `gitbook` format, `SUMMARY.md` is optional:
 point mdbook at any folder of markdown and it builds a **per-section sidebar automatically**
 from the directory tree (each top-level folder gets its own sidebar so pages stay small on
 large repos). Folder labels come from a `README.md` H1 (else the folder name); page labels
-from each file's first H1; entries sort naturally (`01-…` before `10-…`). Add a `SUMMARY.md`
+from each file's first H1 (a `sidebarTitle` frontmatter overrides either). Folders come first, by label.
+Pages whose file name leads with a number or a spec ID (`01-overview.md`, `TEDY.01-code-system.md`)
+follow in file-name order (`01-…` before `10-…`), then the rest by label; a spec with a sub-number
+(`TEDY.01.1-…`) nests under its parent page (`TEDY.01-…`) in the same folder. A link to a folder's
+`README.md` reaches the folder's page. Add a `SUMMARY.md`
 later to take manual control of the nav. Arbitrary markdown is also **hardened** for the Vue
 compiler — a stray `<Placeholder>`/`</tag>` or `{{ … }}` in prose (common in API specs) is
 escaped instead of crashing the build; real HTML, autolinks and code are left intact.

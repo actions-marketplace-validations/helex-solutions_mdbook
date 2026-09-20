@@ -11,9 +11,10 @@ cp .env.sample .env      # fill in — .env is gitignored
 
 | Script | Does |
 |---|---|
-| `setup-realm.sh` | realm, public client, roles, the roles claim mapper, one group per role, optional default role, optional test service account |
-| `setup-idp.sh`   | identity providers (`google`, or `all`) |
-| `setup-all.sh`   | both |
+| `setup-realm.sh` | realm (incl. display name, login theme, email-as-username and **SMTP**), the parts of the **user profile** it owns, public client, roles, the roles claim mapper, one group per role, optional default role, optional test service account |
+| `setup-idp.sh`   | identity providers (`google`, `github`, or `all`) |
+| `setup-first-broker-login.sh` | a first-broker-login flow that **confirms by email** before linking a second provider to an existing account (needs realm SMTP) |
+| `setup-all.sh`   | realm + identity providers |
 | `lib.sh`         | `.env` loading, admin token, REST helpers |
 
 Everything is **re-runnable**: existing objects are reported and left alone, so
@@ -34,11 +35,25 @@ All variables live in [`.env.sample`](.env.sample). The ones that matter most:
 | `MDBOOK_ROLES` | roles to create — **quote it**, it contains spaces |
 | `MDBOOK_DEFAULT_ROLE` | role granted to everyone who can log in; empty grants nothing |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OAuth client; a provider with no credentials is skipped, not half-created — so re-running without a secret never clobbers one already set |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub OAuth App, same skip-if-empty rule. **One App carries one callback URL**, so a second realm needs a second App |
+| `KC_FIRST_BROKER_LOGIN_FLOW` | flow bound to every provider; point it at what `setup-first-broker-login.sh` creates |
+| `KC_EMAIL_AS_USERNAME` | `true`: the email is the username, and both become admin-only in the user profile |
+| `KC_PERSONAL_IDENTIFIER` | `required`, `optional` or empty (not managed): declares `personalIdentifier` — country + national code in one value, pattern-validated, shown by the `helex` theme as two fields |
+| `KC_SAVE_EVENTS` | `true`/`false`, empty = not managed: save user events (logins, links, errors) — the log shows failures only |
+| `KC_EVENTS_EXPIRATION_DAYS` | how long saved events are kept; default `90`, `0` = forever |
+| `KC_IDP_TRUST_EMAIL` | trust the address a provider returns as verified (`true` on the docs realms); marks a new reader's address verified, never skips the email confirmation for an existing account |
 
 `.env` is **parsed, not sourced** — an unquoted value containing spaces would
 otherwise execute as a command, and a config file should never be able to run
 anything. Real environment variables take precedence over the file, so CI can
 supply secrets without writing one.
+
+**Realm settings are applied to an existing realm, not only a new one.**
+Everything else here is create-if-absent, but a realm provisioned before SMTP
+existed would otherwise never gain it — and a realm rebuilt *without* SMTP locks
+out every invited reader, because the first-broker-login flow confirms linking
+by email. The script reads the realm, puts back only the fields it owns, and
+names what it changed; anything set by hand elsewhere in the realm survives.
 
 `.env` holds secrets: it is gitignored, and worth `chmod 600`. Values must not
 carry a trailing `# comment` — the value is taken verbatim to the end of the line.
@@ -51,8 +66,10 @@ carry a trailing `# comment` — the value is taken verbatim to the end of the l
 ## After running
 
 1. Register the broker callback with each provider — the script prints it:
-   `<KC_PUBLIC_URL>/realms/<realm>/broker/google/endpoint`. Google answers
-   `Error 400: redirect_uri_mismatch` until it is added, per realm.
+   `<KC_PUBLIC_URL>/realms/<realm>/broker/<alias>/endpoint`. Google answers
+   `Error 400: redirect_uri_mismatch` until it is added, per realm. A Google
+   OAuth client can list several callbacks and so serve several realms; a GitHub
+   OAuth App accepts exactly one, so each realm needs its own App.
 2. Decide what a federated user may read. **They arrive with no roles**, so
    Google login alone yields 403 on a role-gated section — set
    `MDBOOK_DEFAULT_ROLE`, assign the `mdbook-*` groups, or map a provider claim

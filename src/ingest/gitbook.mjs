@@ -13,6 +13,9 @@ import { collectPdfs, prettifyPdfName } from './pdf.mjs'
 import { iconMarkup } from '../icons.mjs'
 
 const ITEM_RE = /^(\s*)[*-]\s+\[([^\]]*)\]\(([^)]+)\)/
+// An mdBook prefix or suffix chapter: a link alone on its line, with no bullet. The
+// empty first group keeps the match shape of ITEM_RE (indent, text, target).
+const BARE_ITEM_RE = /^()\[([^\]]*)\]\(([^)]+)\)\s*$/
 const GROUP_RE = /^##\s+(.+?)\s*$/
 const TITLE_RE = /^#\s+(.+?)\s*$/
 
@@ -171,8 +174,9 @@ function ingestOne({
   for (const abs of files) {
     const rel = path.relative(dir, abs)
     // A README is a folder's index at ANY depth (root README -> index.md,
-    // docs/README.md -> docs/index.md), so `/docs/` resolves to a real page —
-    // this is what toLink() and the link rewriter already assume.
+    // docs/README.md -> docs/index.md), so `/docs/` resolves to a real page.
+    // toLink() relies on this for SUMMARY.md links, and markdown/readme-links.mjs
+    // points content links written `x/README.md` at the same page.
     const dest = rel.replace(/(^|[\\/])README\.md$/i, (m, sep) => `${sep}index.md`)
     taken.add(destPrefix + dest.split(path.sep).join('/'))
     contentFiles.push({ src: abs, dest: destPrefix + dest, lang })
@@ -296,15 +300,64 @@ const readmeIn = (d, withPdf = true) =>
     .map((r) => path.join(d, r))
     .find((p) => fs.existsSync(p))
 
-// Folders sort before files, each alphabetically (natural order) by their visible
-// label. Icons are applied only after sorting so the markup can't affect order.
+// A page's file name, from its link — the only place an item still carries it.
+const stemOf = (item) => decodeURIComponent(String(item.link || '').split('/').pop())
+
+// A page whose file name leads with a number (`01-overview`) or a spec ID
+// (`TEDY.01-code-system`) was numbered on purpose, so the number decides where it
+// goes. Its label cannot: labels are written to read well, not to sort, so ordering a
+// numbered folder by label scrambles the sequence its author chose.
+const NUMBERED_RE = /^(?:\d+[-_.]|[A-Z][A-Z0-9]*\.\d)/
+
+// The full ID a spec page leads with — TEDY.01, TEDY.01.1, TEDY.01.1.2 …
+const SPEC_ID_RE = /^([A-Z][A-Z0-9]*(?:\.\d+)+)-/
+
+// Numbered pages first, in file-name order; every other page after them, by label.
+function sortPages(files) {
+  const numbered = files.filter((f) => NUMBERED_RE.test(stemOf(f)))
+  const rest = files.filter((f) => !NUMBERED_RE.test(stemOf(f)))
+  numbered.sort((a, b) => naturalCmp(stemOf(a), stemOf(b)))
+  rest.sort((a, b) => naturalCmp(a.text, b.text))
+  return [...numbered, ...rest]
+}
+
+// Spec families nest. A page whose ID has a sub-number (TEDY.01.1) goes under the
+// page carrying its parent ID (TEDY.01) in the same folder, at any depth. The files
+// stay flat on disk — the layout the specifications are written in and are moved
+// between repositories in — so only the menu learns the family. A child whose
+// parent has no page of its own stays at the top level rather than disappearing.
+function nestFamilies(pages) {
+  const byId = new Map()
+  for (const p of pages) {
+    const m = stemOf(p).match(SPEC_ID_RE)
+    if (m) byId.set(m[1], p)
+  }
+  const top = []
+  for (const p of pages) {
+    const id = stemOf(p).match(SPEC_ID_RE)?.[1]
+    const parts = id ? id.split('.') : []
+    const parent = parts.length > 2 ? byId.get(parts.slice(0, -1).join('.')) : null
+    if (parent) (parent.items ||= []).push(p)
+    else top.push(p)
+  }
+  return top
+}
+
+// Folders sort before pages, folders by label. Pages follow sortPages and nest into
+// their spec families. Icons are applied only after ordering, so the markup cannot
+// affect it; items already built by a deeper call carry no `icon` key and pass through.
 function orderAndIcon(folders, files) {
-  const byText = (a, b) => naturalCmp(a.text, b.text)
-  folders.sort(byText)
-  files.sort(byText)
-  return [...folders, ...files].map(({ icon, ...rest }) =>
-    icon ? { ...rest, text: icon + rest.text } : rest
-  )
+  folders.sort((a, b) => naturalCmp(a.text, b.text))
+  const pages = nestFamilies(sortPages(files))
+  const withIcon = ({ icon, items, ...rest }) => {
+    const out = icon ? { ...rest, text: icon + rest.text } : { ...rest }
+    if (items) {
+      out.items = items.map(withIcon)
+      if (!('collapsed' in out)) out.collapsed = true
+    }
+    return out
+  }
+  return [...folders, ...pages].map(withIcon)
 }
 
 // A folder's label and icon come from its README (`sidebarTitle` > H1, and its
@@ -409,26 +462,55 @@ function decorateIcons(items, root) {
   }
 }
 
-// Parse SUMMARY.md into a VitePress sidebar array (groups from `##`, nesting from
-// indent). Links are emitted under `prefix` (empty for the default locale).
+// Parse SUMMARY.md into a VitePress sidebar array. Links are emitted under `prefix`
+// (empty for the default locale); nesting comes from indent. Two dialects share the
+// file name, and they group differently:
+//
+//   GitBook  `# Table of contents`, then `## Group` headings over bulleted entries.
+//   mdBook   `# Summary`, unbulleted prefix chapters, then `# Part` titles over
+//            bulleted entries, then unbulleted suffix chapters. A part title is
+//            mdBook's ONLY grouping syntax — `##` means nothing to it.
+//
+// Both are read one way: the FIRST `#` heading is the book title and is dropped, and
+// every later `#` or `##` heading opens a group. Skipping every `#` line instead (what
+// this did) flattens an mdBook sidebar completely — every part title vanishes and a
+// hundred pages land in one undivided list. The first-heading rule is also why a part
+// placed straight after `# Summary`, with no prefix chapter between them, still groups.
 function parseSummary(text, prefix = '') {
   const root = []
   let currentGroup = null
   let stack = []
+  let seenTitle = false
   const container = () => (currentGroup ? currentGroup.items : root)
 
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue
-    const g = line.match(GROUP_RE)
-    if (g) {
-      currentGroup = { text: g[1], collapsed: false, items: [] }
+    let heading = line.match(GROUP_RE)
+    if (!heading) {
+      const t = line.match(TITLE_RE)
+      if (t && !seenTitle) {
+        seenTitle = true
+        continue
+      }
+      heading = t
+    }
+    if (heading) {
+      currentGroup = { text: heading[1], collapsed: false, items: [] }
       root.push(currentGroup)
       stack = []
       continue
     }
-    if (TITLE_RE.test(line) && !ITEM_RE.test(line)) continue
 
-    const m = line.match(ITEM_RE)
+    let m = line.match(ITEM_RE)
+    if (!m) {
+      m = line.match(BARE_ITEM_RE)
+      // A prefix or suffix chapter belongs to no part: mdBook numbers neither, and
+      // a suffix chapter after the last part must not be swallowed into it.
+      if (m) {
+        currentGroup = null
+        stack = []
+      }
+    }
     if (!m) continue
     const indent = m[1].replace(/\t/g, '  ').length
     const node = { text: m[2].trim(), link: toLink(m[3], prefix) }
