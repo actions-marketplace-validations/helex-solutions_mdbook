@@ -34,6 +34,7 @@ Real sites built with mdbook — click a thumbnail for the live site (see
 - 📊 **Diagrams** — draw.io (including the wiki's versioned `{{drawio:name}}` macro, which always resolves to the newest saved version), Mermaid, and PlantUML (opt-in server, see `diagrams:`)
 - 💻 **Code** — Shiki highlighting for every fenced block; a fence that cites a source file (```` ```43:58:src/Foo.java ````) is highlighted by the file's extension and captioned with the path
 - 📄 **PDFs** — a PDF stored in the repo is published like a page: listed in the menu, previewed inline and downloadable (see [PDFs](#pdfs))
+- 🖨️ **PDF export** — the opposite direction: a **Download PDF** control on every page turns the page, or the whole book, into a document — numbered, with a cover and contents. Needs the [md2pdf](https://github.com/helex-solutions/md2pdf) service (see [PDF export](#pdf-export)). Every site prints properly from Ctrl-P regardless
 - 🌐 **OpenAPI** — render one or many OpenAPI 3.1 / 3.0 / Swagger 2.0 documents into searchable reference pages, from a whole document down to a single operation, with an optional try-it console authenticated via OpenID Connect (see [OpenAPI](#openapi))
 - 🔗 **Terminology** — `{{csc:}}`/`{{vsc:}}` concept tables fetched from a FHIR server at build time; `{{def:}}` renders an include card naming the definition
 - 🏷️ **SEO** — per-page titles/descriptions, `sitemap.xml`, canonical + Open Graph/Twitter tags, JSON-LD and `robots.txt`. Descriptions, languages and site URL are read from the Owliki export when authored (site URL also auto-detected in CI), with first-paragraph/CI inference as the fallback; page **tags** are emitted as `<meta name="keywords">`
@@ -111,7 +112,7 @@ in [Authentication](#authentication).
        steps:
          - uses: actions/checkout@v7
          - id: mdbook
-           uses: helex-solutions/mdbook@v1.8.3   # pin to a release tag (see Versioning)
+           uses: helex-solutions/mdbook@v1.9.0   # pin to a release tag (see Versioning)
            with: { project: . }
          - uses: actions/configure-pages@v6
          - uses: actions/upload-pages-artifact@v5
@@ -137,7 +138,7 @@ in [Authentication](#authentication).
 
 ### Versioning
 
-Pin the action to a **release tag** (e.g. `helex-solutions/mdbook@v1.8.3`) so your site builds are
+Pin the action to a **release tag** (e.g. `helex-solutions/mdbook@v1.9.0`) so your site builds are
 deterministic — `main` can move without silently redeploying your site. See the
 [releases](https://github.com/helex-solutions/mdbook/releases). Use `@main` only if you want the
 latest, unreleased changes.
@@ -147,7 +148,8 @@ on someone else's schedule, which is the thing pinning exists to prevent. Every 
 exact version, so `@v1` resolves to nothing — upgrade by changing the pin.
 
 **Upgrading from `v1.7.0`.** Two things change for wiki-export sites, both one line each. From
-`v1.8.0` there is nothing to do — `v1.8.1`, `v1.8.2` and `v1.8.3` are patches.
+`v1.8.0` there is nothing to do — `v1.8.1`, `v1.8.2` and `v1.8.3` are patches, and `v1.9.0` adds
+PDF export, which does not exist for a site until `pdf.server` names the md2pdf service.
 
 `comments.mapping` must read `owliki` if it carried the retired name. Both spellings resolved to
 the same discussion term — the page code — so changing the word keeps every existing thread; a
@@ -167,10 +169,10 @@ nothing at all.
 **To publish a new mdbook version:**
 
 ```bash
-git tag -a v1.8.4 -m "…" && git push origin v1.8.4   # patch; v1.9.0 for features
+git tag -a v1.9.1 -m "…" && git push origin v1.9.1   # patch; v1.10.0 for features
 ```
 
-Then bump `@v1.8.3` → `@v1.8.4` in each consumer's `.github/workflows/mdbook.yml` and push —
+Then bump `@v1.9.0` → `@v1.9.1` in each consumer's `.github/workflows/mdbook.yml` and push —
 a deliberate step, so upgrades are reviewed rather than automatic.
 
 ## Local preview
@@ -202,12 +204,26 @@ source:
   spaces:                      # owliki only — multi-space portal (see Multi-space portals)
     handbook: spaces/handbook  #   mount key -> wiki-ssg export dir
     api: spaces/api
-  pdf: true                    # gitbook only — publish repo PDFs as pages (see PDFs)
+  pdf: true                    # gitbook only — publish repo PDFs as pages, i.e. PDFs IN
+                               #   (see PDFs; not to be confused with the `pdf:` block below)
   exclude:                     # hide files/folders from BOTH the pages and the menu
     - CLAUDE.md                #   bare name -> matches at any depth
     - _templates               #   folder name -> the whole subtree
     - agents/notes             #   path -> matches from the content root
     - "*.draft.md"             #   `*` within a segment, `**` across segments
+
+# PDF export — pages OUT as PDFs, via the md2pdf service. See PDF export below.
+# Unset means the feature does not exist for this site; there is no `pdf: true`.
+pdf:
+  server: http://md2pdf:18509  # REQUIRED — naming the server is the switch
+  token: ${MD2PDF_TOKEN}       # if the service requires one (env, never inline)
+  scope: [page, book]          # which downloads to offer
+  theme: site                  # site (the site's own skin) | plain | helex |
+                               #   helex-onepager | taltech | tervisekassa
+  numbered: true               # prefix 1. / 1.1 into heading text
+  format: A4
+  margin: { top: 18mm, right: 16mm, bottom: 20mm, left: 16mm }
+  css: ./.mdbook/pdf.css       # extra stylesheet, applied last
 
 # Site authentication — see the Authentication section below.
 auth:
@@ -224,6 +240,7 @@ openapi:
     petstore: ./api/petstore.yaml
   sort: path                   # source (default) | path | summary
   tryIt: true                  # interactive console (default: true)
+  retries: 3                   # attempts per URL source (default: 3; 1 = no retry)
   auth:                        # only what an OpenAPI document cannot declare
     clientId: docs-portal
     scopes: [openid, profile]
@@ -426,6 +443,110 @@ item may carry an image (cover), a heading (title), text (description) and links
 {.card-grid}
 ```
 
+## PDF export
+
+**This is the opposite direction from [PDFs](#pdfs) above.** That section is about
+PDFs *stored in the repo*, published as pages — PDFs **in**. This one turns
+*pages* into PDFs — **out**. They are configured by two different keys:
+`source.pdf` for the first, the top-level `pdf:` block for this one.
+
+With it enabled, every page carries a **Download PDF** control in the nav bar,
+offering the page itself and — if you enable it — the whole book as one document
+with a cover, a table of contents and numbered sections.
+
+### What it needs
+
+A rendering service, [**md2pdf**](https://github.com/helex-solutions/md2pdf),
+because a PDF needs a layout engine and mdbook's runtime image deliberately has
+no browser in it. It is a separate container:
+
+```yaml
+# docker-compose.yml
+services:
+  docs:
+    image: ghcr.io/helex-solutions/mdbook:latest
+    # …
+  md2pdf:
+    image: ghcr.io/helex-solutions/md2pdf:latest
+    restart: unless-stopped        # no published port — docs reaches it
+```
+
+```yaml
+# .mdbook/config.yml
+pdf:
+  server: http://md2pdf:18509
+```
+
+Naming the server **is** the switch — there is no `pdf: true`, so configuration
+and behaviour cannot disagree. This is the same shape `diagrams.plantumlServer`
+uses.
+
+### How it works
+
+The PDF is built from the **built page**, not from the markdown, so what a reader
+reads and what gets filed cannot diverge. `mdbook serve` assembles the document
+from its own `dist/`, inlines the stylesheet and images, and posts it to md2pdf.
+
+The browser never talks to md2pdf. That is what lets **access control apply to the
+export**: on a gated site a reader cannot export a page they cannot read, and a
+whole-book export contains exactly the pages *that reader* may see — the rest are
+listed at the end rather than silently dropped.
+
+**The feature therefore needs `mdbook serve`.** On a statically hosted site
+(GitHub Pages) there is no endpoint to answer, so the control hides itself rather
+than offering something that cannot work.
+
+### Printing without it
+
+`print.css` is part of the theme, so **every** mdbook site prints properly from
+Ctrl-P whether or not md2pdf exists: chrome hidden, article full width, the light
+palette, long tables repeating their header row across pages, code wrapped rather
+than clipped, and external link URLs printed after the link.
+
+### Themes
+
+`pdf.theme` picks the document's look:
+
+| | |
+|---|---|
+| `site` (default) | the site's own skin — the PDF looks like the page |
+| `plain` | unstyled baseline: readable type, sane tables |
+| `helex`, `helex-onepager`, `taltech`, `tervisekassa` | brand documents, with a title block and a per-page footer |
+
+A named theme can take a logo — `pdf.logo: ./.mdbook/logo.png`, inlined at build
+time — and `pdf.css` is applied last, so a deployment can adjust one without
+forking it.
+
+### Per-page layout
+
+A page that is one wide reference table can say so in its frontmatter:
+
+```yaml
+---
+pdf: { orientation: landscape, margins: narrow, scale: 0.9, tables: fit }
+---
+```
+
+| Key | Values |
+|---|---|
+| `orientation` | `portrait` (default), `landscape` |
+| `margins` | `narrow`, `normal`, `wide` |
+| `scale` | `0.5`–`1.5` |
+| `tables` | `fit` — shrink wide tables to the page instead of overflowing it |
+
+These apply to a single-page export only; a book export ignores them, because a
+dozen pages each claiming a different page box cannot all be honoured.
+
+### Heading numbering
+
+`pdf.numbered` (on by default) numbers `h2`–`h4` as `1.`, `1.1`, `1.1.1`,
+**prefixed into the heading text** rather than drawn with CSS counters — so the
+numbers survive copy-paste and PDF text extraction, which is the point of having
+them. A heading that already begins with a number (`17 — Module dependencies`) is
+left exactly as authored, and the table of contents is generated from the same
+pass, so the two cannot disagree.
+
+
 ## OpenAPI
 
 Point mdbook at one or more API documents and embed them in your pages. **OpenAPI 3.1**,
@@ -458,6 +579,19 @@ Documents are read **at build time**, not in the browser. That means the site wo
 air-gapped network, the docs are pinned to the spec they were built from, and — unlike a
 client-side viewer — your API does **not** need to allow CORS from the docs site. A resolved
 document is cached, so a later build still succeeds if a remote spec is briefly unreachable.
+
+A URL source is fetched up to three times before that cached copy is used, because the
+documents are served by live services and a restart or a proxy hiccup makes one attempt fail
+and the next succeed — publishing a stale API reference over a blip that lasted a second. Set
+`openapi.retries` to change the count (`1` disables retrying). A local file and a missing
+`${VAR}` are never retried: neither heals by asking again. Each failed attempt is logged with
+the reason it failed, and when every attempt fails the reason is reported with the spec.
+
+> **Localhost is refused.** The resolver rejects `localhost`, `127.0.0.1`, RFC1918 addresses
+> and `.local` / `.internal` / `.corp` hostnames as unsafe, so a spec URL pointing at a
+> development server on the same machine never loads — it fails with
+> `Unable to resolve $ref pointer`, before any request is made. Use a file path for a local
+> document.
 
 ### Embedding — from whole document to one operation
 
